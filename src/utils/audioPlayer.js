@@ -1,35 +1,80 @@
 const { createAudioPlayer, createAudioResource, AudioPlayerStatus } = require('@discordjs/voice');
+const path = require('path');
 const { getLocalResource } = require('../sources/local');
 
-function playTracks(connection, pistas, interaction) {
-  const player = createAudioPlayer();
-  connection.subscribe(player);
+const players = new Map();
 
-  let index = 0;
-  const playNext = () => {
-    if (index >= pistas.length) {
-      connection.destroy();
-      return;
+function playTracks(guildId, connection, pistas, interaction, options = {}) {
+    // Filtrar pistas inválidas y asegurar que sean strings
+    let queue = pistas
+        .filter(p => p && typeof p === 'string' && p.trim() !== '')
+        .map(p => p.trim());
+    
+    if (queue.length === 0) {
+        interaction.followUp('❌ No hay pistas válidas para reproducir');
+        return;
     }
-    const pista = pistas[index++];
-    try {
-      const recurso = getLocalResource(pista.path);
-      player.play(recurso);
-      interaction.followUp(`🎶 Reproduciendo: ${pista.path}`);
-    } catch (err) {
-      interaction.followUp(`❌ Error: ${err.message}`);
-      console.error(err);
-      playNext();
+
+    if (options.shuffle) {
+        // Mejor método de mezcla
+        queue = queue
+            .map(value => ({ value, sort: Math.random() }))
+            .sort((a, b) => a.sort - b.sort)
+            .map(({ value }) => value);
     }
-  };
 
-  player.on(AudioPlayerStatus.Idle, playNext);
-  player.on('error', err => {
-    console.error('AudioPlayer error:', err);
-    playNext();
-  });
+    const player = createAudioPlayer();
+    connection.subscribe(player);
+    players.set(guildId, { connection, player, queue });
 
-  playNext();
+    const next = () => {
+        if (queue.length === 0) {
+            cleanup(guildId);
+            return;
+        }
+        
+        const pista = queue.shift();
+        try {
+            const recurso = getLocalResource(pista);
+            player.play(recurso);
+            
+            const trackName = path.basename(pista);
+            interaction.followUp(`🎶 Reproduciendo: ${trackName}`);
+        } catch (err) {
+            console.error('Error en recurso de audio:', err);
+            interaction.followUp(`❌ Error en pista: ${err.message}`);
+            next(); // Saltar a la siguiente pista
+        }
+    };
+
+    player.on(AudioPlayerStatus.Idle, next);
+    player.on('error', err => {
+        console.error('Error audioPlayer:', err);
+        next();
+    });
+
+    next();
 }
 
-module.exports = { playTracks };
+function stopPlayer(guildId) {
+    const data = players.get(guildId);
+    if (!data) return false;
+    data.player.stop(true);
+    data.connection.destroy();
+    players.delete(guildId);
+    return true;
+}
+
+function cleanup(guildId) {
+    const data = players.get(guildId);
+    if (!data) return;
+    data.connection.destroy();
+    players.delete(guildId);
+}
+
+// Exporta como objeto para evitar problemas de referencia
+module.exports = {
+    playTracks,
+    stopPlayer,
+    players
+};
