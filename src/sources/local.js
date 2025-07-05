@@ -119,25 +119,27 @@ const getAllTracks = async () => {
     return allTracks;
 };
 
-// Buscar por nombre de archivo (para playlist)
+
 const findTrackByName = async (fileName) => {
     const normalizedFileName = normalizeFileName(fileName);
+    const results = [];
     
     for (const basePath of MUSIC_BASE_PATHS) {
         try {
             const files = await findAudioFiles(basePath);
-            const found = files.find(file => {
+            const found = files.filter(file => {
                 const baseName = path.basename(file.path);
-                return normalizeFileName(baseName) === normalizedFileName;
+                return normalizeFileName(baseName).includes(normalizedFileName);
             });
             
-            if (found) return found;
+            results.push(...found);
         } catch (error) {
             console.error(`Error buscando en ${basePath}:`, error);
         }
     }
-    return null;
+    return results;
 };
+
 
 // Crear recurso de audio
 const getLocalResource = (filePath) => {

@@ -1,107 +1,56 @@
-// src/commands/playlist.js
+// src/commands/playlists.js
 const { SlashCommandBuilder } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
-const { findTrackByName } = require('../sources/local');
 
-const PLAYLISTS_PATH = path.join(__dirname, '../../config/playlists.json');
-
-// Cargar o inicializar playlists
-let playlists = {};
-if (fs.existsSync(PLAYLISTS_PATH)) {
-    playlists = JSON.parse(fs.readFileSync(PLAYLISTS_PATH));
-} else {
-    fs.writeFileSync(PLAYLISTS_PATH, JSON.stringify(playlists, null, 2));
-}
+const PLAYLISTS_FILE = path.join(__dirname, '../../config/playlists.json');
 
 module.exports = {
     data: new SlashCommandBuilder()
-        .setName('playlist')
-        .setDescription('Gestiona tus playlists')
-        .addSubcommand(subcommand =>
-            subcommand
-                .setName('add')
-                .setDescription('Añade canción a playlist')
-                .addStringOption(option =>
-                    option.setName('playlist')
-                        .setDescription('Nombre de la playlist')
-                        .setRequired(true))
-                .addStringOption(option =>
-                    option.setName('cancion')
-                        .setDescription('Nombre de la canción')
-                        .setRequired(true)))
-        .addSubcommand(subcommand =>
-            subcommand
-                .setName('remove')
-                .setDescription('Elimina canción de playlist')
-                .addStringOption(option =>
-                    option.setName('playlist')
-                        .setDescription('Nombre de la playlist')
-                        .setRequired(true))
-                .addStringOption(option =>
-                    option.setName('cancion')
-                        .setDescription('Nombre de la canción')
-                        .setRequired(true)))
-        .addSubcommand(subcommand =>
-            subcommand
-                .setName('list')
-                .setDescription('Muestra canciones en playlist')
-                .addStringOption(option =>
-                    option.setName('playlist')
-                        .setDescription('Nombre de la playlist')
-                        .setRequired(true))),
+        .setName('playlists')
+        .setDescription('Muestra todas las playlists o canciones de una playlist')
+        .addStringOption(option =>
+            option.setName('nombre')
+                .setDescription('Nombre de la playlist (opcional)')
+                .setRequired(false)),
     
     async execute(interaction) {
-        const subcommand = interaction.options.getSubcommand();
-        const playlistName = interaction.options.getString('playlist');
-        const songName = interaction.options.getString('cancion');
+        await interaction.deferReply();
+
+        // Leer el archivo de playlists
+        let playlists;
+        try {
+            playlists = JSON.parse(fs.readFileSync(PLAYLISTS_FILE, 'utf8'));
+        } catch (error) {
+            console.error('Error leyendo playlists:', error);
+            return interaction.editReply('❌ Error al cargar las playlists');
+        }
+
+        const playlistName = interaction.options.getString('nombre');
         
-        // Inicializar playlist si no existe
-        if (!playlists[playlistName]) {
-            playlists[playlistName] = [];
+        // Si se especificó una playlist
+        if (playlistName) {
+            if (!playlists[playlistName]) {
+                return interaction.editReply(`❌ No existe la playlist "${playlistName}"`);
+            }
+            
+            let response = `📋 Canciones en "${playlistName}":\n`;
+            playlists[playlistName].forEach((track, index) => {
+                response += `${index + 1}. ${track}\n`;
+            });
+            return interaction.editReply(response);
         }
         
-        switch (subcommand) {
-            case 'add': {
-                // Verificar si la canción existe
-                const trackPath = findTrackByName(songName);
-                if (!trackPath) {
-                    return interaction.reply(`❌ Canción no encontrada: ${songName}`);
-                }
-                
-                // Añadir si no existe
-                if (!playlists[playlistName].includes(songName)) {
-                    playlists[playlistName].push(songName);
-                    fs.writeFileSync(PLAYLISTS_PATH, JSON.stringify(playlists, null, 2));
-                    await interaction.reply(`✅ Añadida a ${playlistName}: ${songName}`);
-                } else {
-                    await interaction.reply(`⚠️ La canción ya existe en: ${playlistName}`);
-                }
-                break;
-            }
-                
-            case 'remove': {
-                const index = playlists[playlistName].indexOf(songName);
-                if (index !== -1) {
-                    playlists[playlistName].splice(index, 1);
-                    fs.writeFileSync(PLAYLISTS_PATH, JSON.stringify(playlists, null, 2));
-                    await interaction.reply(`✅ Eliminada de ${playlistName}: ${songName}`);
-                } else {
-                    await interaction.reply(`⚠️ Canción no encontrada en: ${playlistName}`);
-                }
-                break;
-            }
-                
-            case 'list': {
-                const songs = playlists[playlistName];
-                if (songs.length === 0) {
-                    await interaction.reply(`📋 ${playlistName} está vacía`);
-                } else {
-                    const list = songs.map((song, i) => `${i+1}. ${song}`).join('\n');
-                    await interaction.reply(`📋 Playlist ${playlistName}:\n${list}`);
-                }
-                break;
-            }
+        // Mostrar todas las playlists
+        const playlistNames = Object.keys(playlists);
+        if (playlistNames.length === 0) {
+            return interaction.editReply('ℹ️ No hay playlists guardadas');
         }
+
+        let response = '📚 Playlists disponibles:\n';
+        playlistNames.forEach(name => {
+            response += `- ${name} (${playlists[name].length} canciones)\n`;
+        });
+        interaction.editReply(response);
     }
 };

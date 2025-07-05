@@ -1,59 +1,93 @@
 const { createAudioPlayer, createAudioResource, AudioPlayerStatus } = require('@discordjs/voice');
-const path = require('path');
 const { getLocalResource } = require('../sources/local');
+const path = require('path');
 
-const players = new Map();
+const players = new Map(); // guildId -> { connection, player, queue, currentIndex }
 
 function playTracks(guildId, connection, pistas, interaction, options = {}) {
-    // Filtrar pistas inválidas y asegurar que sean strings
-    let queue = pistas
-        .filter(p => p && typeof p === 'string' && p.trim() !== '')
-        .map(p => p.trim());
+    // Filtrar pistas válidas
+    let queue = pistas.filter(p => p && typeof p === 'string' && p.trim() !== '');
     
     if (queue.length === 0) {
         interaction.followUp('❌ No hay pistas válidas para reproducir');
         return;
     }
 
-    if (options.shuffle) {
-        // Mejor método de mezcla
-        queue = queue
-            .map(value => ({ value, sort: Math.random() }))
-            .sort((a, b) => a.sort - b.sort)
-            .map(({ value }) => value);
+    // Obtener o crear el reproductor
+    let playerInfo = players.get(guildId);
+    if (!playerInfo) {
+        const player = createAudioPlayer();
+        connection.subscribe(player);
+        playerInfo = {
+            connection,
+            player,
+            queue: [],
+            currentIndex: -1
+        };
+        players.set(guildId, playerInfo);
     }
 
-    const player = createAudioPlayer();
-    connection.subscribe(player);
-    players.set(guildId, { connection, player, queue });
+    // Agregar nuevas pistas a la cola
+    playerInfo.queue.push(...queue);
 
-    const next = () => {
-        if (queue.length === 0) {
-            cleanup(guildId);
-            return;
-        }
+    // Configurar manejadores de eventos si es la primera vez
+    if (!playerInfo.eventHandlersSet) {
+        playerInfo.player.on(AudioPlayerStatus.Idle, () => {
+            playNext(guildId, interaction);
+        });
         
-        const pista = queue.shift();
-        try {
-            const recurso = getLocalResource(pista);
-            player.play(recurso);
-            
-            const trackName = path.basename(pista);
-            interaction.followUp(`🎶 Reproduciendo: ${trackName}`);
-        } catch (err) {
-            console.error('Error en recurso de audio:', err);
+        playerInfo.player.on('error', err => {
+            console.error('Error audioPlayer:', err);
             interaction.followUp(`❌ Error en pista: ${err.message}`);
-            next(); // Saltar a la siguiente pista
-        }
-    };
+            playNext(guildId, interaction);
+        });
+        
+        playerInfo.eventHandlersSet = true;
+    }
 
-    player.on(AudioPlayerStatus.Idle, next);
-    player.on('error', err => {
-        console.error('Error audioPlayer:', err);
-        next();
-    });
+    // Si no se está reproduciendo nada, comenzar
+    if (playerInfo.player.state.status === AudioPlayerStatus.Idle) {
+        playNext(guildId, interaction);
+    }
 
-    next();
+    interaction.followUp(`✅ Se agregaron ${queue.length} canciones a la cola`);
+}
+
+function playNext(guildId, interaction) {
+    const playerInfo = players.get(guildId);
+    if (!playerInfo || playerInfo.queue.length === 0) return;
+
+    playerInfo.currentIndex++;
+    
+    // Si llegamos al final de la cola
+    if (playerInfo.currentIndex >= playerInfo.queue.length) {
+        cleanup(guildId);
+        return;
+    }
+
+    const pista = playerInfo.queue[playerInfo.currentIndex];
+    try {
+        const recurso = getLocalResource(pista);
+        playerInfo.player.play(recurso);
+        
+        const trackName = path.basename(pista);
+        interaction.followUp(`🎶 Reproduciendo: ${trackName}`);
+    } catch (err) {
+        console.error('Error en recurso de audio:', err);
+        interaction.followUp(`❌ Error en pista: ${err.message}`);
+        playNext(guildId, interaction); // Saltar a la siguiente
+    }
+}
+
+function skip(guildId, interaction) {
+    const playerInfo = players.get(guildId);
+    if (!playerInfo) return false;
+
+    if (playerInfo.player.state.status === AudioPlayerStatus.Playing) {
+        playerInfo.player.stop();
+        return true;
+    }
+    return false;
 }
 
 function stopPlayer(guildId) {
@@ -72,9 +106,21 @@ function cleanup(guildId) {
     players.delete(guildId);
 }
 
-// Exporta como objeto para evitar problemas de referencia
-module.exports = {
-    playTracks,
-    stopPlayer,
-    players
+function getQueue(guildId) {
+    const playerInfo = players.get(guildId);
+    return playerInfo ? playerInfo.queue : [];
+}
+
+function getCurrentIndex(guildId) {
+    const playerInfo = players.get(guildId);
+    return playerInfo ? playerInfo.currentIndex : -1;
+}
+
+module.exports = { 
+    playTracks, 
+    skip, 
+    stopPlayer, 
+    players, 
+    getQueue,
+    getCurrentIndex
 };

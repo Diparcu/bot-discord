@@ -1,105 +1,62 @@
 // src/commands/play.js
-const { joinVoiceChannel } = require('@discordjs/voice');
 const { SlashCommandBuilder } = require('discord.js');
-const { playTracks } = require('../utils/audioPlayer');
-const { getLocalTracks, findTrackByName } = require('../sources/local');
-const fs = require('fs');
+const { joinVoiceChannel } = require('@discordjs/voice');
+const local = require('../sources/local');
+const audioPlayer = require('../utils/audioPlayer');
 const path = require('path');
-
-const PLAYLISTS_PATH = path.join(__dirname, '../../config/playlists.json');
 
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('play')
-        .setDescription('Reproduce música')
+        .setDescription('Reproduce una canción específica')
         .addStringOption(option =>
-            option.setName('nombre')
-                .setDescription('Servidor, playlist o canción')
+            option.setName('cancion')
+                .setDescription('Nombre de la canción')
                 .setRequired(true))
-        .addBooleanOption(option =>
-            option.setName('shuffle')
-                .setDescription('Mezclar las pistas')
+        .addIntegerOption(option =>
+            option.setName('numero')
+                .setDescription('Número de la canción si hay múltiples resultados')
                 .setRequired(false)),
     
     async execute(interaction) {
-        const nombre = interaction.options.getString('nombre');
-        const shuffle = interaction.options.getBoolean('shuffle') || false;
-        
-        let pistas = [];
-        let sourceName = nombre;
+        await interaction.deferReply();
+        const songName = interaction.options.getString('cancion');
+        const trackNumber = interaction.options.getInteger('numero') || 1;
 
-
-	pistas = pistas.map(track => {
-	  if (typeof track !== 'string') {
-	    console.warn(`⚠️ Pista no es string:`, track);
-	    return String(track); // Convertir a string
-	  }
-	  return track;
-	});
-
-
-        try {
-            // Verificar si es una playlist
-            if (fs.existsSync(PLAYLISTS_PATH)) {
-                const playlists = JSON.parse(fs.readFileSync(PLAYLISTS_PATH));
-                if (playlists[nombre]) {
-                    // Buscar las rutas completas de las canciones
-                    pistas = playlists[nombre]
-                        .map(fileName => findTrackByName(fileName))
-                        .filter(Boolean);
-                    
-                    if (pistas.length === 0) {
-                        return interaction.reply(`❌ Playlist vacía o canciones no encontradas: ${nombre}`);
-                    }
-                    
-                    sourceName = `Playlist: ${nombre}`;
-                }
-            }
-            
-            // Si no es playlist, buscar como servidor
-            if (pistas.length === 0) {
-                pistas = getLocalTracks(nombre);
-                if (pistas.length === 0) {
-                    // Intentar buscar como archivo individual
-                    const trackPath = findTrackByName(nombre);
-                    if (trackPath) {
-                        pistas = [trackPath];
-                        sourceName = path.basename(trackPath);
-                    } else {
-                        return interaction.reply(`❌ No se encontró: ${nombre}`);
-                    }
-                } else {
-                    sourceName = `Servidor: ${nombre}`;
-                }
-            }
-            
-            // Aplicar shuffle si se solicitó
-            if (shuffle) {
-                for (let i = pistas.length - 1; i > 0; i--) {
-                    const j = Math.floor(Math.random() * (i + 1));
-                    [pistas[i], pistas[j]] = [pistas[j], pistas[i]];
-                }
-            }
-            
-            // Conectar al canal de voz
-            const canal = interaction.member.voice.channel;
-            if (!canal) {
-                return interaction.reply('❌ Debes estar en un canal de voz.');
-            }
-            
-            const connection = joinVoiceChannel({
-                channelId: canal.id,
-                guildId: canal.guild.id,
-                adapterCreator: canal.guild.voiceAdapterCreator
-            });
-            
-            // Reproducir
-            await interaction.reply(`▶️ Reproduciendo: ${sourceName}${shuffle ? ' (mezclado)' : ''}`);
-            playTracks(interaction.guildId, connection, pistas, interaction);
-            
-        } catch (error) {
-            console.error('Error en /play:', error);
-            interaction.reply(`❌ Error: ${error.message}`);
+        // Buscar la canción
+        const tracks = await local.findTrackByName(songName);
+        if (!tracks || tracks.length === 0) {
+            return interaction.editReply('❌ No se encontró la canción');
         }
+
+        // Si hay múltiples resultados
+        if (tracks.length > 1) {
+            if (trackNumber < 1 || trackNumber > tracks.length) {
+                let response = `🔍 Se encontraron ${tracks.length} canciones:\n`;
+                tracks.slice(0, 10).forEach((track, index) => {
+                    const name = track.bufferName.toString('utf8').replace(/�/g, "'");
+                    response += `${index + 1}. ${name}\n`;
+                });
+                response += `\nPor favor selecciona un número entre 1 y ${tracks.length}`;
+                return interaction.editReply(response);
+            }
+        }
+
+        const selectedTrack = tracks[trackNumber - 1];
+        const trackPath = selectedTrack.path;
+        
+        const channel = interaction.member.voice.channel;
+        if (!channel) {
+            return interaction.editReply('❌ Debes estar en un canal de voz');
+        }
+
+        const connection = joinVoiceChannel({
+            channelId: channel.id,
+            guildId: channel.guild.id,
+            adapterCreator: channel.guild.voiceAdapterCreator
+        });
+
+        await interaction.editReply(`🎵 Reproduciendo: ${path.basename(trackPath)}`);
+        audioPlayer.playTracks(interaction.guildId, connection, [trackPath], interaction);
     }
 };

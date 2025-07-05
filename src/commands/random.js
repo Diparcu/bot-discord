@@ -2,7 +2,7 @@ const { SlashCommandBuilder } = require('discord.js');
 const { joinVoiceChannel } = require('@discordjs/voice');
 const path = require('path');
 const audioPlayer = require('../utils/audioPlayer');
-const local = require('../sources/local'); // Importación corregida
+const local = require('../sources/local');
 
 const MUSIC_BASE_PATHS = [
     '/HDD4TB1/home/jfuser/Musica',
@@ -10,75 +10,54 @@ const MUSIC_BASE_PATHS = [
     '/HDD4TB3/home/jfuser/Musica'
 ];
 
+// Función para obtener múltiples pistas aleatorias
+const getRandomTracks = async (serverName, count) => {
+    let tracks = [];
+    
+    if (serverName) {
+        const serverTracks = await local.getLocalTracks(serverName) || [];
+        if (serverTracks.length === 0) return [];
+        
+        // Mezclar aleatoriamente y tomar las primeras 'count'
+        tracks = serverTracks
+            .map(track => track.path)
+            .sort(() => Math.random() - 0.5)
+            .slice(0, count);
+    } else {
+        const allTracks = await local.getAllTracks() || [];
+        if (allTracks.length === 0) return [];
+        
+        // Mezclar aleatoriamente y tomar las primeras 'count'
+        tracks = allTracks
+            .map(track => track.path)
+            .sort(() => Math.random() - 0.5)
+            .slice(0, count);
+    }
+    
+    return tracks;
+};
+
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('random')
-        .setDescription('Reproduce una canción aleatoria')
+        .setDescription('Reproduce canciones aleatorias continuamente')
         .addStringOption(option =>
             option.setName('servidor')
                 .setDescription('Nombre del servidor (opcional)')
+                .setRequired(false))
+        .addIntegerOption(option =>
+            option.setName('cantidad')
+                .setDescription('Número de canciones (0 = infinito)')
                 .setRequired(false)),
     
     async execute(interaction) {
         await interaction.deferReply();
         
         const serverName = interaction.options.getString('servidor');
-        let trackObject;
-        let randomTrackPath;
-        let sourceName = "aleatoria";
-        let trackName;
+        const cantidad = interaction.options.getInteger('cantidad') || 10; // Default 10 canciones
+        const isInfinite = cantidad === 0;
         
         try {
-            if (serverName) {
-                const tracks = await local.getLocalTracks(serverName) || [];
-                if (!tracks || tracks.length === 0) {
-                    return interaction.editReply(`❌ No se encontraron pistas en: ${serverName}`);
-                }
-                const randomEntry = tracks[Math.floor(Math.random() * tracks.length)];
-                trackObject = randomEntry;
-                randomTrackPath = randomEntry.path;
-                
-                try {
-                    trackName = randomEntry.bufferName.toString('utf8').replace(/�/g, "'");
-                } catch (error) {
-                    console.warn('Error decodificando nombre, usando nombre de archivo');
-                    trackName = path.basename(randomTrackPath);
-                }
-            } 
-            else {
-                const allTracks = await local.getAllTracks() || [];
-                if (!allTracks || allTracks.length === 0) {
-                    return interaction.editReply('❌ No se encontraron pistas en ningún servidor');
-                }
-                
-                trackObject = allTracks[Math.floor(Math.random() * allTracks.length)];
-                randomTrackPath = trackObject.path;
-                
-                // Manejo mejorado de sourceName
-                let foundSource = false;
-                for (const basePath of MUSIC_BASE_PATHS) {
-                    if (randomTrackPath && randomTrackPath.startsWith(basePath)) {
-                        const relativePath = path.relative(basePath, path.dirname(randomTrackPath));
-                        sourceName = relativePath.split(path.sep)[0] || "desconocido";
-                        foundSource = true;
-                        break;
-                    }
-                }
-                if (!foundSource) sourceName = "desconocido";
-                
-                try {
-                    trackName = trackObject.bufferName.toString('utf8').replace(/�/g, "'");
-                } catch (error) {
-                    console.warn('Error decodificando nombre, usando nombre de archivo');
-                    trackName = path.basename(randomTrackPath);
-                }
-            }
-            
-            // Verificar que tenemos una ruta válida
-            if (!randomTrackPath || typeof randomTrackPath !== 'string') {
-                throw new Error('La ruta del track seleccionado es inválida');
-            }
-            
             const canal = interaction.member.voice.channel;
             if (!canal) {
                 return interaction.editReply('❌ Debes estar en un canal de voz.');
@@ -90,8 +69,29 @@ module.exports = {
                 adapterCreator: canal.guild.voiceAdapterCreator
             });
             
-            await interaction.editReply(`🎲 Reproduciendo aleatorio: **${trackName}** (de ${sourceName})`);
-            audioPlayer.playTracks(interaction.guildId, connection, [randomTrackPath], interaction);
+            // Obtener pistas aleatorias
+            const tracks = await getRandomTracks(serverName, isInfinite ? 100 : cantidad);
+            
+            if (tracks.length === 0) {
+                return interaction.editReply('❌ No se encontraron pistas para reproducir.');
+            }
+            
+            // Mensaje informativo
+            const sourceName = serverName || "todos los servidores";
+            const modeMessage = isInfinite ? 
+                `♾️ Reproduciendo canciones aleatorias infinitas de ${sourceName}` : 
+                `🎲 Reproduciendo ${tracks.length} canciones aleatorias de ${sourceName}`;
+            
+            await interaction.editReply(modeMessage);
+            
+            // Configurar modo infinito si es necesario
+            const options = {
+                infinite: isInfinite,
+                source: serverName || "all"
+            };
+            
+            // Iniciar reproducción
+            audioPlayer.playTracks(interaction.guildId, connection, tracks, interaction, options);
             
         } catch (error) {
             console.error('Error en comando /random:', error);
